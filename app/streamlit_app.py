@@ -48,19 +48,29 @@ def load_and_predict(ticker: str):
     csv_path   = f"{RAW_DATA_DIR}/{ticker}.csv"
     model_path = f"{MODEL_DIR}/{ticker}_logreg_model.pkl"
     scaler_path= f"{MODEL_DIR}/{ticker}_scaler.pkl"
+
     if not os.path.exists(csv_path):
         return None, None, None
+
     df = normalise_df(pd.read_csv(csv_path))
     df = add_technical_indicators(df)
+
+    # ── ADD THIS ──────────────────────────────────────────────
+    df = df.dropna(subset=FEATURES)
+    if df.empty:
+        print(f"[{ticker}] No usable rows after indicators — skipping.")
+        return None, None, None
+    # ─────────────────────────────────────────────────────────
+
     if not os.path.exists(model_path):
         return df, None, None
+
     model  = joblib.load(model_path)
     scaler = joblib.load(scaler_path)
     X      = scaler.transform(df[FEATURES])
     df['Prediction'] = model.predict(X)
     df['Pred_Prob']  = model.predict_proba(X)[:, 1]
     return df, model, scaler
-
 
 def get_current_price(ticker: str):
     try:
