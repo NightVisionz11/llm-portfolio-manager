@@ -4,11 +4,18 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 import joblib
+
 from src.features.technical_indicators import add_technical_indicators
 from src.data.loader import load_stock_csv
 from src.utils.config import MODEL_DIR
 
-def train_logreg_model(csv_file: str):
+
+def train_logreg_model(csv_file: str, ticker: str = None):
+    """
+    Train a logistic regression model for the given CSV file.
+    Saves as {ticker}_logreg_model.pkl and {ticker}_scaler.pkl.
+    Falls back to generic names if ticker not provided.
+    """
     df = load_stock_csv(csv_file)
     df = add_technical_indicators(df)
 
@@ -28,16 +35,15 @@ def train_logreg_model(csv_file: str):
     model = LogisticRegression()
     model.fit(X_train, y_train)
 
-    train_auc = roc_auc_score(y_train, model.predict_proba(X_train)[:,1])
-    valid_auc = roc_auc_score(y_valid, model.predict_proba(X_valid)[:,1])
+    train_auc = roc_auc_score(y_train, model.predict_proba(X_train)[:, 1])
+    valid_auc = roc_auc_score(y_valid, model.predict_proba(X_valid)[:, 1])
+    print(f"[{ticker or csv_file}] Train ROC-AUC: {train_auc:.3f} | Valid ROC-AUC: {valid_auc:.3f}")
 
-    print(f"Training ROC-AUC: {train_auc:.3f}")
-    print(f"Validation ROC-AUC: {valid_auc:.3f}")
+    prefix = ticker if ticker else "logreg"
+    joblib.dump(model, f"{MODEL_DIR}/{prefix}_logreg_model.pkl")
+    joblib.dump(scaler, f"{MODEL_DIR}/{prefix}_scaler.pkl")
+    print(f"Model saved as {prefix}_logreg_model.pkl")
 
-    # Save model & scaler
-    joblib.dump(model, f"{MODEL_DIR}/logreg_model.pkl")
-    joblib.dump(scaler, f"{MODEL_DIR}/scaler.pkl")
-    print("Model saved.")
 
 if __name__ == "__main__":
-    train_logreg_model("Tesla.csv")
+    train_logreg_model("Tesla.csv", ticker="TSLA")

@@ -1,0 +1,36 @@
+{
+  "starting_cash": 500000.0,
+  "cash": 404214.84002685547,
+  "positions": {
+    "NDX": {
+      "shares": 2,
+      "avg_cost": 22953.380859375
+    },
+    "NVDA": {
+      "shares": 286,
+      "avg_cost": 174.39999389648438
+    }
+  },
+  "trades": [
+    {
+      "date": "2026-03-31 15:21",
+      "ticker": "NDX",
+      "action": "BUY",
+      "shares": 2,
+      "price": 22953.3809,
+      "value": 45906.76,
+      "probability": 0.5753,
+      "pnl": null
+    },
+    {
+      "date": "2026-03-31 15:23",
+      "ticker": "NVDA",
+      "action": "BUY",
+      "shares": 286,
+      "price": 174.4,
+      "value": 49878.4,
+      "probability": 0.5562,
+      "pnl": null
+    }
+  ]
+}

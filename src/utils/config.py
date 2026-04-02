@@ -5,3 +5,4 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 RAW_DATA_DIR = os.path.join(BASE_DIR, 'data', 'raw')
 PROCESSED_DATA_DIR = os.path.join(BASE_DIR, 'data', 'processed')
 MODEL_DIR = os.path.join(BASE_DIR, 'models')
+PORTFOLIO_DIR = os.path.join(BASE_DIR, 'data', 'portfolio')
