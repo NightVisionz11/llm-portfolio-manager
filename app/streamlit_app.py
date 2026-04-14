@@ -18,7 +18,11 @@ from src.features.technical_indicators import add_technical_indicators
 from src.models.train import train_logreg_model
 from src.models.evaluate import evaluate_model, backtest_strategy, sharpe_ratio, max_drawdown
 from src.models.walk_forward import run_walk_forward, run_multi_ticker_walk_forward
-from src.llm.explainer import explain_prediction, explain_backtest
+from src.llm.explainer import (
+    explain_prediction, explain_backtest,
+    ollama_available, list_ollama_models,
+    _rule_based_prediction, _rule_based_backtest,
+)
 from src.models.experiments import run_experiments, MODEL_REGISTRY, FEATURE_SETS
 from src.utils.config import MODEL_DIR, RAW_DATA_DIR
 from src.portfolio.portfolio import (
@@ -55,12 +59,10 @@ def load_and_predict(ticker: str):
     df = normalise_df(pd.read_csv(csv_path))
     df = add_technical_indicators(df)
 
-    # ── ADD THIS ──────────────────────────────────────────────
     df = df.dropna(subset=FEATURES)
     if df.empty:
         print(f"[{ticker}] No usable rows after indicators — skipping.")
         return None, None, None
-    # ─────────────────────────────────────────────────────────
 
     if not os.path.exists(model_path):
         return df, None, None
@@ -71,6 +73,7 @@ def load_and_predict(ticker: str):
     df['Prediction'] = model.predict(X)
     df['Pred_Prob']  = model.predict_proba(X)[:, 1]
     return df, model, scaler
+
 
 def get_current_price(ticker: str):
     try:
@@ -128,6 +131,37 @@ with st.sidebar:
     if st.button("Set Starting Cash", use_container_width=True):
         reset_portfolio(starting_cash=float(starting_cash))
         st.rerun()
+
+    # ── LLM Explainer ─────────────────────────────────────────────────────────
+    st.divider()
+    st.header("🤖 LLM Explainer")
+
+    _ollama_running = ollama_available()
+
+    if _ollama_running:
+        st.success("✅ Ollama is running")
+        _available_models = list_ollama_models()
+        ollama_model = st.selectbox(
+            "Model",
+            options=_available_models,
+            help="Select which locally installed Ollama model to use for explanations.",
+        )
+    else:
+        st.warning("⚠️ Ollama not detected")
+        st.caption(
+            "To enable AI explanations:\n"
+            "1. Download [Ollama](https://ollama.com)\n"
+            "2. Run: `ollama pull llama3.2`\n"
+            "3. Restart the app"
+        )
+        ollama_model = "llama3.2"  # default — won't be called if Ollama is offline
+
+    use_llm = st.toggle(
+        "Use LLM explanations",
+        value=_ollama_running,
+        disabled=not _ollama_running,
+        help="Uncheck to always use the fast rule-based template instead.",
+    )
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -201,12 +235,25 @@ with tab1:
             st.success(f"### 📈 UP  ({prob:.0%} confidence)")
         else:
             st.error(f"### 📉 DOWN  ({1-prob:.0%} confidence)")
-        st.metric("Last Close",    f"${latest['Close']:.2f}")
-        st.metric("Daily Return",  f"{latest['Return']*100:.2f}%")
-        st.metric("SMA 5",         f"${latest['SMA_5']:.2f}")
-        st.metric("SMA 10",        f"${latest['SMA_10']:.2f}")
+        st.metric("Last Close",   f"${latest['Close']:.2f}")
+        st.metric("Daily Return", f"{latest['Return']*100:.2f}%")
+        st.metric("SMA 5",        f"${latest['SMA_5']:.2f}")
+        st.metric("SMA 10",       f"${latest['SMA_10']:.2f}")
         st.divider()
-        st.markdown(explain_prediction(ticker, pred, prob if pred==1 else 1-prob, latest.to_dict()))
+
+        # ── LLM or rule-based explanation
+        with st.spinner("🤖 Generating explanation...") if use_llm else st.empty():
+            if use_llm:
+                explanation = explain_prediction(
+                    ticker, pred, prob if pred == 1 else 1 - prob,
+                    latest.to_dict(), model=ollama_model,
+                )
+            else:
+                explanation = _rule_based_prediction(
+                    ticker, pred, prob if pred == 1 else 1 - prob,
+                    latest.to_dict(),
+                )
+        st.markdown(explanation)
 
 
 # ── Tab 2 ─────────────────────────────────────────────────────────────────────
@@ -218,17 +265,39 @@ with tab2:
     final_mkt   = bt['Cumulative_Market'].iloc[-1]
 
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Strategy Return",  f"{(final_strat-1)*100:.1f}%")
-    c2.metric("Buy & Hold Return",f"{(final_mkt-1)*100:.1f}%")
-    c3.metric("Sharpe Ratio",     str(sr))
-    c4.metric("Max Drawdown",     f"{md:.1%}")
+    c1.metric("Strategy Return",   f"{(final_strat-1)*100:.1f}%")
+    c2.metric("Buy & Hold Return", f"{(final_mkt-1)*100:.1f}%")
+    c3.metric("Sharpe Ratio",      str(sr))
+    c4.metric("Max Drawdown",      f"{md:.1%}")
 
     fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=bt['Date'], y=bt['Cumulative_Strategy'], name='ML Strategy',   line=dict(color='lime')))
-    fig2.add_trace(go.Scatter(x=bt['Date'], y=bt['Cumulative_Market'],   name='Buy & Hold',    line=dict(color='royalblue', dash='dash')))
+    fig2.add_trace(go.Scatter(x=bt['Date'], y=bt['Cumulative_Strategy'], name='ML Strategy', line=dict(color='lime')))
+    fig2.add_trace(go.Scatter(x=bt['Date'], y=bt['Cumulative_Market'],   name='Buy & Hold',  line=dict(color='royalblue', dash='dash')))
     fig2.update_layout(title="Cumulative Returns", height=400, yaxis_title="Growth of $1")
     st.plotly_chart(fig2, use_container_width=True)
-    st.info(explain_backtest(sr, md, final_strat, final_mkt))
+
+    # ── LLM or rule-based backtest explanation
+    total_ret_pct = round((final_strat - 1) * 100, 2)
+    bh_ret_pct    = round((final_mkt   - 1) * 100, 2)
+
+    with st.spinner("🤖 Generating backtest summary...") if use_llm else st.empty():
+        if use_llm:
+            bt_explanation = explain_backtest(
+                sharpe=sr,
+                max_dd=md,
+                final_strat=final_strat,
+                final_market=final_mkt,
+                ticker=ticker,
+                total_return=total_ret_pct,
+                bh_return=bh_ret_pct,
+                num_trades=int(bt['Prediction'].sum()),
+                win_rate=0.0,   # simple backtest doesn't track per-trade win rate
+                model=ollama_model,
+            )
+        else:
+            bt_explanation = _rule_based_backtest(sr, md, final_strat, final_mkt)
+
+    st.info(bt_explanation)
 
 
 # ── Tab 3 ─────────────────────────────────────────────────────────────────────
@@ -315,7 +384,6 @@ with tab5:
         st.warning("No trained tickers found. Download & Retrain at least one ticker first.")
         st.stop()
 
-    # AFTER
     col1, col2 = st.columns(2)
     with col1:
         selected_tickers = st.multiselect(
@@ -333,10 +401,9 @@ with tab5:
         wf_cash       = st.number_input("Starting capital ($)", value=100_000, step=10_000)
         wf_confidence = st.slider("Confidence threshold", 0.5, 0.90, 0.55, 0.01, key="wf_conf")
         wf_pos_size   = st.slider("Position size (%)", 0.05, 1.0, 0.20, 0.01, key="wf_pos")
-
-        # Show a brief description of the chosen model/feature set
         st.caption(f"**{wf_model_name}** · {wf_feature_name} features: "
-                f"`{', '.join(FEATURE_SETS[wf_feature_name])}`")
+                   f"`{', '.join(FEATURE_SETS[wf_feature_name])}`")
+
     if st.button("▶️ Run Walk-Forward Backtest", use_container_width=True, type="primary"):
         if not selected_tickers:
             st.error("Select at least one ticker.")
@@ -348,7 +415,6 @@ with tab5:
                     if os.path.exists(csv_path):
                         raw_data[t] = normalise_df(pd.read_csv(csv_path))
 
-                # AFTER
                 import copy
                 results = run_multi_ticker_walk_forward(
                     tickers=selected_tickers,
@@ -365,116 +431,131 @@ with tab5:
                 st.error("Backtest failed — check that your tickers have enough data before the cutoff date.")
                 st.stop()
 
-            summary = results["summary"]
-            st.divider()
+            st.session_state["wf_results"] = results
+            st.session_state["wf_cutoff"]  = cutoff
 
-            # ── Top-level summary metrics
-            st.subheader("📊 Overall Results")
-            st.caption(f"Model: **{wf_model_name}** · Features: **{wf_feature_name}**")
-            profitable = summary['total_return_pct'] > 0
-            if profitable:
-                st.success(f"✅ Strategy was **profitable** over the test period!")
-            else:
-                st.error(f"❌ Strategy was **not profitable** over the test period.")
+    if "wf_results" in st.session_state:
+        results = st.session_state["wf_results"]
+        cutoff  = st.session_state["wf_cutoff"]
+        summary = results["summary"]
 
-            m1,m2,m3,m4 = st.columns(4)
-            m1.metric("Final Portfolio Value", f"${summary['final_value']:,.2f}",
-                      delta=f"{summary['total_return_pct']:.2f}%")
-            m2.metric("Buy & Hold Return",
-            f"{summary['bh_return_pct']:.2f}%")
-            m3.metric("Alpha vs Buy & Hold",   f"{summary['alpha']:+.2f}%")
-            m4.metric("Total Trades",          summary['num_trades'])
+        st.divider()
+        st.subheader("📊 Overall Results")
 
-            # ── Combined equity curve
-            combined = results["combined_equity"]
-            fig_eq = go.Figure()
-            fig_eq.add_trace(go.Scatter(x=combined['Date'], y=combined['Total_Strategy'],
-                                        name='ML Strategy', line=dict(color='lime', width=2)))
-            fig_eq.add_trace(go.Scatter(x=combined['Date'], y=combined['Total_BuyHold'],
-                                        name='Buy & Hold',  line=dict(color='royalblue', dash='dash', width=2)))
-            cutoff_ts = pd.to_datetime(cutoff)
+        profitable = summary['total_return_pct'] > 0
+        if profitable:
+            st.success("✅ Strategy was **profitable** over the test period!")
+        else:
+            st.error("❌ Strategy was **not profitable** over the test period.")
 
-            fig_eq.add_shape(
-                type="line",
-                x0=cutoff_ts,
-                x1=cutoff_ts,
-                y0=0,
-                y1=1,
-                xref="x",
-                yref="paper",  # spans full height
-                line=dict(color="orange", dash="dot")
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric("Final Portfolio Value", f"${summary['final_value']:,.2f}",
+                  delta=f"{summary['total_return_pct']:.2f}%")
+        m2.metric("Buy & Hold Return",     f"{summary['bh_return_pct']:.2f}%")
+        m3.metric("Alpha vs Buy & Hold",   f"{summary['alpha']:+.2f}%")
+        m4.metric("Total Trades",          summary['num_trades'])
+
+        # ── LLM walk-forward summary (uses first ticker's metrics for context)
+        if results.get("per_ticker"):
+            first_ticker = list(results["per_ticker"].keys())[0]
+            wf_m = results["per_ticker"][first_ticker]["metrics"]
+            with st.spinner("🤖 Generating strategy summary...") if use_llm else st.empty():
+                if use_llm:
+                    wf_explanation = explain_backtest(
+                        sharpe=wf_m["sharpe_ratio"],
+                        max_dd=wf_m["max_drawdown"],
+                        final_strat=wf_m["final_value"] / wf_m["starting_cash"],
+                        final_market=wf_m["bh_final_value"] / wf_m["starting_cash"],
+                        ticker=", ".join(summary["tickers"]),
+                        total_return=summary["total_return_pct"],
+                        bh_return=summary["bh_return_pct"],
+                        num_trades=summary["num_trades"],
+                        win_rate=wf_m.get("win_rate_pct", 0),
+                        model=ollama_model,
+                    )
+                else:
+                    wf_explanation = _rule_based_backtest(
+                        wf_m["sharpe_ratio"], wf_m["max_drawdown"],
+                        wf_m["final_value"] / wf_m["starting_cash"],
+                        wf_m["bh_final_value"] / wf_m["starting_cash"],
+                    )
+            st.info(wf_explanation)
+
+        # ── Combined equity curve
+        combined  = results["combined_equity"]
+        cutoff_ts = pd.to_datetime(cutoff)
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(x=combined['Date'], y=combined['Total_Strategy'],
+                                    name='ML Strategy', line=dict(color='lime', width=2)))
+        fig_eq.add_trace(go.Scatter(x=combined['Date'], y=combined['Total_BuyHold'],
+                                    name='Buy & Hold',  line=dict(color='royalblue', dash='dash', width=2)))
+        fig_eq.add_shape(type="line", x0=cutoff_ts, x1=cutoff_ts, y0=0, y1=1,
+                         xref="x", yref="paper", line=dict(color="orange", dash="dot"))
+        fig_eq.add_annotation(x=cutoff_ts, y=1, xref="x", yref="paper",
+                              text="Train/Test Split", showarrow=False,
+                              xanchor="left", yanchor="bottom")
+        fig_eq.update_layout(title="Combined Portfolio Value — Out-of-Sample Period",
+                             height=420, yaxis_title="Portfolio Value ($)")
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        # ── Per-ticker breakdown
+        st.divider()
+        st.subheader("📈 Per-Ticker Results")
+        ticker_rows = []
+        for t, r in results["per_ticker"].items():
+            m = r["metrics"]
+            ticker_rows.append({
+                "Ticker":        t,
+                "Return %":      f"{m['total_return_pct']:+.2f}%",
+                "B&H Return %":  f"{m['bh_return_pct']:+.2f}%",
+                "Alpha":         f"{m['alpha']:+.2f}%",
+                "Sharpe":        m['sharpe_ratio'],
+                "Max Drawdown":  f"{m['max_drawdown']:.1%}",
+                "# Trades":      m['num_trades'],
+                "Win Rate":      f"{m['win_rate_pct']:.0f}%",
+                "Realized P&L":  f"${m['realized_pnl']:,.2f}",
+                "Train ROC-AUC": m['train_roc_auc'],
+                "Test Days":     m['test_days'],
+            })
+        st.dataframe(pd.DataFrame(ticker_rows), use_container_width=True, hide_index=True)
+
+        # ── Per-ticker equity curves
+        fig_tickers = go.Figure()
+        colors = px.colors.qualitative.Plotly
+        for i, (t, r) in enumerate(results["per_ticker"].items()):
+            eq = r["equity_curve"]
+            fig_tickers.add_trace(go.Scatter(
+                x=eq['Date'], y=eq['Portfolio_Value'],
+                name=f"{t} Strategy", line=dict(color=colors[i % len(colors)])
+            ))
+            fig_tickers.add_trace(go.Scatter(
+                x=eq['Date'], y=eq['BuyHold_Value'],
+                name=f"{t} B&H", line=dict(color=colors[i % len(colors)], dash='dot'),
+                opacity=0.5
+            ))
+        fig_tickers.update_layout(title="Individual Ticker Equity Curves",
+                                  height=420, yaxis_title="Value ($)")
+        st.plotly_chart(fig_tickers, use_container_width=True)
+
+        # ── Trade log
+        st.divider()
+        st.subheader("📋 All Trades During Test Period")
+        all_trades = results["all_trades"]
+        if all_trades:
+            tdf = pd.DataFrame(all_trades)
+            tdf["pnl"]        = tdf["pnl"].apply(lambda x: f"${x:,.2f}" if x is not None else "—")
+            tdf["value"]      = tdf["value"].apply(lambda x: f"${x:,.2f}")
+            tdf["price"]      = tdf["price"].apply(lambda x: f"${x:.2f}")
+            tdf["confidence"] = tdf["confidence"].apply(
+                lambda x: f"{x:.0%}" if x is not None else "—"
             )
+            tdf.columns = ["Date","Ticker","Action","Shares","Price","Value","Confidence","P&L"]
+            st.dataframe(tdf, use_container_width=True, hide_index=True)
+        else:
+            st.info("No trades were executed. Try lowering the confidence threshold.")
 
-            fig_eq.add_annotation(
-                x=cutoff_ts,
-                y=1,
-                xref="x",
-                yref="paper",
-                text="Train/Test Split",
-                showarrow=False,
-                xanchor="left",
-                yanchor="bottom"
-            )
-           
-            fig_eq.update_layout(title="Combined Portfolio Value — Out-of-Sample Period",
-                                 height=420, yaxis_title="Portfolio Value ($)")
-            st.plotly_chart(fig_eq, use_container_width=True)
 
-            # ── Per-ticker breakdown
-            st.divider()
-            st.subheader("📈 Per-Ticker Results")
-            ticker_rows = []
-            for t, r in results["per_ticker"].items():
-                m = r["metrics"]
-                ticker_rows.append({
-                    "Ticker":         t,
-                    "Return %":       f"{m['total_return_pct']:+.2f}%",
-                    "B&H Return %":   f"{m['bh_return_pct']:+.2f}%",
-                    "Alpha":          f"{m['alpha']:+.2f}%",
-                    "Sharpe":         m['sharpe_ratio'],
-                    "Max Drawdown":   f"{m['max_drawdown']:.1%}",
-                    "# Trades":       m['num_trades'],
-                    "Win Rate":       f"{m['win_rate_pct']:.0f}%",
-                    "Realized P&L":   f"${m['realized_pnl']:,.2f}",
-                    "Train ROC-AUC":  m['train_roc_auc'],
-                    "Test Days":      m['test_days'],
-                })
-            st.dataframe(pd.DataFrame(ticker_rows), use_container_width=True, hide_index=True)
-
-            # ── Per-ticker equity curves
-            fig_tickers = go.Figure()
-            colors = px.colors.qualitative.Plotly
-            for i, (t, r) in enumerate(results["per_ticker"].items()):
-                eq = r["equity_curve"]
-                fig_tickers.add_trace(go.Scatter(
-                    x=eq['Date'], y=eq['Portfolio_Value'],
-                    name=f"{t} Strategy", line=dict(color=colors[i % len(colors)])
-                ))
-                fig_tickers.add_trace(go.Scatter(
-                    x=eq['Date'], y=eq['BuyHold_Value'],
-                    name=f"{t} B&H", line=dict(color=colors[i % len(colors)], dash='dot'),
-                    opacity=0.5
-                ))
-            fig_tickers.update_layout(title="Individual Ticker Equity Curves",
-                                      height=420, yaxis_title="Value ($)")
-            st.plotly_chart(fig_tickers, use_container_width=True)
-
-            # ── Trade log
-            st.divider()
-            st.subheader("📋 All Trades During Test Period")
-            all_trades = results["all_trades"]
-            if all_trades:
-                tdf = pd.DataFrame(all_trades)
-                tdf["pnl"]        = tdf["pnl"].apply(lambda x: f"${x:,.2f}" if x is not None else "—")
-                tdf["value"]      = tdf["value"].apply(lambda x: f"${x:,.2f}")
-                tdf["price"]      = tdf["price"].apply(lambda x: f"${x:.2f}")
-                tdf["confidence"] = tdf["confidence"].apply(
-                    lambda x: f"{x:.0%}" if x is not None else "—"
-                )
-                tdf.columns = ["Date","Ticker","Action","Shares","Price","Value","Confidence","P&L"]
-                st.dataframe(tdf, use_container_width=True, hide_index=True)
-            else:
-                st.info("No trades were executed. Try lowering the confidence threshold.")
+# ── Tab 6: Experiments ────────────────────────────────────────────────────────
 with tab6:
     st.subheader("🔬 Model & Feature Experiments")
     st.markdown(
@@ -523,14 +604,29 @@ with tab6:
     if "exp_results" in st.session_state:
         results_df = st.session_state["exp_results"]
 
-        # Best result callout
         best = results_df.loc[results_df["Return %"].idxmax()]
         st.success(
             f"🏆 Best: **{best['Model']}** with **{best['Features']}** features — "
             f"{best['Return %']:+.2f}% return, {best['Alpha']:+.2f}% alpha"
         )
 
-        # Full results table
+        # ── LLM experiment summary
+        with st.spinner("🤖 Summarising experiment results...") if use_llm else st.empty():
+            if use_llm:
+                exp_explanation = explain_backtest(
+                    sharpe=best["Sharpe"],
+                    max_dd=best["Max Drawdown"],
+                    final_strat=1 + best["Return %"] / 100,
+                    final_market=1 + best["B&H Return %"] / 100,
+                    ticker=exp_ticker,
+                    total_return=best["Return %"],
+                    bh_return=best["B&H Return %"],
+                    num_trades=int(best["# Trades"]),
+                    win_rate=best["Win Rate %"],
+                    model=ollama_model,
+                )
+                st.info(exp_explanation)
+
         st.subheader("📊 All Results")
         display_df = results_df.copy()
         display_df["Return %"]     = display_df["Return %"].apply(lambda x: f"{x:+.2f}%")
@@ -540,21 +636,10 @@ with tab6:
         display_df["Win Rate %"]   = display_df["Win Rate %"].apply(lambda x: f"{x:.0f}%")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # Bar chart — Return by model and feature set
-        import plotly.express as px
-        fig = px.bar(
-            results_df,
-            x="Model", y="Return %", color="Features",
-            barmode="group",
-            title="Return % by Model and Feature Set",
-        )
+        fig = px.bar(results_df, x="Model", y="Return %", color="Features",
+                     barmode="group", title="Return % by Model and Feature Set")
         st.plotly_chart(fig, use_container_width=True)
 
-        # Sharpe comparison
-        fig2 = px.bar(
-            results_df,
-            x="Model", y="Sharpe", color="Features",
-            barmode="group",
-            title="Sharpe Ratio by Model and Feature Set",
-        )
+        fig2 = px.bar(results_df, x="Model", y="Sharpe", color="Features",
+                      barmode="group", title="Sharpe Ratio by Model and Feature Set")
         st.plotly_chart(fig2, use_container_width=True)

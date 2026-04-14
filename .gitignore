@@ -1,0 +1,11 @@
+# Python cache 
+__pycache__/ 
+*.pyc 
+*.pyo 
+# Models and data 
+models/ 
+data/raw/ 
+data/portfolio/ 
+# Environment 
+.env 
+softwareProj/ 
