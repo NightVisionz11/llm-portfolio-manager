@@ -196,60 +196,93 @@ def run_multi_ticker_walk_forward(
     starting_cash: float = 100_000.0,
     confidence_threshold: float = 0.55,
     position_size_pct: float = 0.10,
-    model=None,               # NEW: passed through to run_walk_forward
-    feature_set: list = None, # NEW: passed through to run_walk_forward
+    model=None,
+    feature_set: list = None,
 ) -> dict:
     """
     Run walk-forward backtest across multiple tickers.
-    Capital is split evenly across tickers.
+    Capital is split evenly across tickers that successfully complete —
+    skipped tickers do not silently reduce the starting portfolio value.
     """
-    results     = {}
-    all_trades  = []
-    per_capital = starting_cash / len(tickers)
+    import copy
+
+    # ── Step 1: run every ticker at full capital so return % and trade
+    #    logic are unaffected, collect only the ones that succeed ────────
+    results    = {}
+    all_trades = []
 
     for ticker in tickers:
         if ticker not in raw_data:
             continue
         try:
-            import copy
             r = run_walk_forward(
                 df_raw=raw_data[ticker],
                 ticker=ticker,
                 cutoff_date=cutoff_date,
-                starting_cash=per_capital,
+                starting_cash=starting_cash,   # full amount — rescaled below
                 confidence_threshold=confidence_threshold,
                 position_size_pct=position_size_pct,
-                model=copy.deepcopy(model),      # NEW: fresh model instance per ticker
-                feature_set=feature_set,         # NEW: passed through
+                model=copy.deepcopy(model),
+                feature_set=feature_set,
             )
             results[ticker] = r
-            all_trades.extend(r["trades"])
         except Exception as e:
             print(f"[{ticker}] Skipped: {e}")
 
     if not results:
         return {}
 
-    # Combine equity curves across all tickers
+    # ── Step 2: now that we know how many tickers succeeded, scale every
+    #    dollar amount down proportionally so they sum to starting_cash ──
+    n           = len(results)
+    per_capital = starting_cash / n
+    scale       = per_capital / starting_cash   # e.g. 0.5 for 2 tickers
+
+    for ticker, r in results.items():
+        eq = r["equity_curve"]
+        eq["Portfolio_Value"] = (eq["Portfolio_Value"] * scale).round(2)
+        eq["BuyHold_Value"]   = (eq["BuyHold_Value"]   * scale).round(2)
+        eq["Cash"]            = (eq["Cash"]             * scale).round(2)
+
+        # scale trade log so values/pnl match the adjusted capital
+        for t in r["trades"]:
+            t["value"] = round(t["value"] * scale, 2)
+            if t["pnl"] is not None:
+                t["pnl"] = round(t["pnl"] * scale, 2)
+
+        # update metrics to reflect actual allocated capital
+        m = r["metrics"]
+        m["starting_cash"] = round(per_capital, 2)
+        m["final_value"]   = round(eq["Portfolio_Value"].iloc[-1], 2)
+        m["bh_final_value"]= round(eq["BuyHold_Value"].iloc[-1], 2)
+        m["realized_pnl"]  = round(
+            sum(t["pnl"] for t in r["trades"] if t["pnl"] is not None), 2
+        )
+        # return % stays correct because it was computed at full capital
+        # with the same proportional trades, so no need to recompute
+
+        all_trades.extend(r["trades"])
+
+    # ── Step 3: combine equity curves across all successful tickers ──────
     equity_dfs = []
     for ticker, r in results.items():
-        eq = r["equity_curve"][['Date', 'Portfolio_Value', 'BuyHold_Value']].copy()
+        eq = r["equity_curve"][["Date", "Portfolio_Value", "BuyHold_Value"]].copy()
         eq = eq.rename(columns={
-            'Portfolio_Value': f'{ticker}_Value',
-            'BuyHold_Value':   f'{ticker}_BH',
+            "Portfolio_Value": f"{ticker}_Value",
+            "BuyHold_Value":   f"{ticker}_BH",
         })
-        equity_dfs.append(eq.set_index('Date'))
+        equity_dfs.append(eq.set_index("Date"))
 
     combined = pd.concat(equity_dfs, axis=1)
     combined = combined.ffill().dropna().reset_index()
 
-    strat_cols = [c for c in combined.columns if c.endswith('_Value')]
-    bh_cols    = [c for c in combined.columns if c.endswith('_BH')]
-    combined['Total_Strategy'] = combined[strat_cols].sum(axis=1)
-    combined['Total_BuyHold']  = combined[bh_cols].sum(axis=1)
+    strat_cols = [c for c in combined.columns if c.endswith("_Value")]
+    bh_cols    = [c for c in combined.columns if c.endswith("_BH")]
+    combined["Total_Strategy"] = combined[strat_cols].sum(axis=1)
+    combined["Total_BuyHold"]  = combined[bh_cols].sum(axis=1)
 
-    total_final  = combined['Total_Strategy'].iloc[-1]
-    total_bh     = combined['Total_BuyHold'].iloc[-1]
+    total_final  = combined["Total_Strategy"].iloc[-1]
+    total_bh     = combined["Total_BuyHold"].iloc[-1]
     total_return = (total_final - starting_cash) / starting_cash * 100
     bh_return    = (total_bh   - starting_cash) / starting_cash * 100
 
