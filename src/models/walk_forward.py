@@ -82,7 +82,7 @@ def run_walk_forward(
 
         # BUY: model says UP, confident enough, not already holding
         if pred == 1 and prob >= confidence_threshold and shares_held == 0:
-            spend  = port_val * position_size_pct
+            spend = starting_cash * position_size_pct
             shares = int(spend // price)
             if shares > 0 and cash >= shares * price:
                 cash       -= shares * price
@@ -135,18 +135,12 @@ def run_walk_forward(
     eq_df = pd.DataFrame(equity_curve)
 
     # Buy-and-hold benchmark over same period
-   # Buy-and-hold benchmark with adjustable allocation
-    bh_start   = float(test_df.iloc[0]['Close'])
-    bh_capital = starting_cash * bh_allocation_pct
+    bh_start             = float(test_df.iloc[0]['Close'])
+    bh_shares = (starting_cash * position_size_pct) // bh_start
+    bh_leftover          = starting_cash - bh_shares * bh_start
+    eq_df['BuyHold_Value'] = bh_shares * eq_df['Close'] + bh_leftover
 
-    bh_shares   = int(bh_capital // bh_start)
-    bh_leftover = bh_capital - bh_shares * bh_start
-
-    # Remaining cash stays idle (just like your strategy)
-    idle_cash = starting_cash - bh_capital
-
-    eq_df['BuyHold_Value'] = bh_shares * eq_df['Close'] + bh_leftover + idle_cash
-        # Performance metrics
+    # Performance metrics
     final_value  = eq_df['Portfolio_Value'].iloc[-1]
     final_bh     = eq_df['BuyHold_Value'].iloc[-1]
     total_return = (final_value - starting_cash) / starting_cash
@@ -217,6 +211,8 @@ def run_multi_ticker_walk_forward(
     results    = {}
     all_trades = []
 
+    per_ticker_cash = starting_cash / len(tickers)
+
     for ticker in tickers:
         if ticker not in raw_data:
             continue
@@ -225,7 +221,7 @@ def run_multi_ticker_walk_forward(
                 df_raw=raw_data[ticker],
                 ticker=ticker,
                 cutoff_date=cutoff_date,
-                starting_cash=starting_cash,   # full amount — rescaled below
+                starting_cash=per_ticker_cash,
                 confidence_threshold=confidence_threshold,
                 position_size_pct=position_size_pct,
                 model=copy.deepcopy(model),
@@ -238,38 +234,6 @@ def run_multi_ticker_walk_forward(
 
     if not results:
         return {}
-
-    # ── Step 2: now that we know how many tickers succeeded, scale every
-    #    dollar amount down proportionally so they sum to starting_cash ──
-    n           = len(results)
-    per_capital = starting_cash / n
-    scale       = per_capital / starting_cash   # e.g. 0.5 for 2 tickers
-
-    for ticker, r in results.items():
-        eq = r["equity_curve"]
-        eq["Portfolio_Value"] = (eq["Portfolio_Value"] * scale).round(2)
-        eq["BuyHold_Value"]   = (eq["BuyHold_Value"]   * scale).round(2)
-        eq["Cash"]            = (eq["Cash"]             * scale).round(2)
-
-        # scale trade log so values/pnl match the adjusted capital
-        for t in r["trades"]:
-            t["value"] = round(t["value"] * scale, 2)
-            if t["pnl"] is not None:
-                t["pnl"] = round(t["pnl"] * scale, 2)
-
-        # update metrics to reflect actual allocated capital
-        m = r["metrics"]
-        m["starting_cash"] = round(per_capital, 2)
-        m["final_value"]   = round(eq["Portfolio_Value"].iloc[-1], 2)
-        m["bh_final_value"]= round(eq["BuyHold_Value"].iloc[-1], 2)
-        m["realized_pnl"]  = round(
-            sum(t["pnl"] for t in r["trades"] if t["pnl"] is not None), 2
-        )
-        # return % stays correct because it was computed at full capital
-        # with the same proportional trades, so no need to recompute
-
-        all_trades.extend(r["trades"])
-
     # ── Step 3: combine equity curves across all successful tickers ──────
     equity_dfs = []
     for ticker, r in results.items():

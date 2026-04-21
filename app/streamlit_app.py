@@ -241,19 +241,34 @@ with tab1:
         st.metric("SMA 10",       f"${latest['SMA_10']:.2f}")
         st.divider()
 
-        # ── LLM or rule-based explanation
-        with st.spinner("🤖 Generating explanation...") if use_llm else st.empty():
-            if use_llm:
-                explanation = explain_prediction(
-                    ticker, pred, prob if pred == 1 else 1 - prob,
-                    latest.to_dict(), model=ollama_model,
-                )
-            else:
-                explanation = _rule_based_prediction(
-                    ticker, pred, prob if pred == 1 else 1 - prob,
-                    latest.to_dict(),
-                )
-        st.markdown(explanation)
+        st.subheader("🤖 Explanation")
+
+        if st.button("Generate explanation", key=f"explain_{ticker}"):
+
+            with st.spinner("Generating explanation..."):
+                if use_llm:
+                    explanation = explain_prediction(
+                        ticker,
+                        pred,
+                        prob if pred == 1 else 1 - prob,
+                        latest.to_dict(),
+                        model=ollama_model,
+                    )
+                else:
+                    explanation = _rule_based_prediction(
+                        ticker,
+                        pred,
+                        prob if pred == 1 else 1 - prob,
+                        latest.to_dict(),
+                    )
+
+                # store result so it persists across reruns
+                st.session_state[f"explanation_{ticker}"] = explanation
+
+        # show cached explanation if it exists
+        key = f"explanation_{ticker}"
+        if key in st.session_state:
+            st.markdown(st.session_state[key])
 
 
 # ── Tab 2 ─────────────────────────────────────────────────────────────────────
@@ -280,24 +295,34 @@ with tab2:
     total_ret_pct = round((final_strat - 1) * 100, 2)
     bh_ret_pct    = round((final_mkt   - 1) * 100, 2)
 
-    with st.spinner("🤖 Generating backtest summary...") if use_llm else st.empty():
-        if use_llm:
-            bt_explanation = explain_backtest(
-                sharpe=sr,
-                max_dd=md,
-                final_strat=final_strat,
-                final_market=final_mkt,
-                ticker=ticker,
-                total_return=total_ret_pct,
-                bh_return=bh_ret_pct,
-                num_trades=int(bt['Prediction'].sum()),
-                win_rate=0.0,   # simple backtest doesn't track per-trade win rate
-                model=ollama_model,
-            )
-        else:
-            bt_explanation = _rule_based_backtest(sr, md, final_strat, final_mkt)
+    st.divider()
+    st.subheader("🤖 Backtest Explanation")
 
-    st.info(bt_explanation)
+    bt_key = f"bt_explanation_{ticker}_{bt.index[-1]}"
+
+    if st.button("Generate backtest explanation", key=f"bt_btn_{ticker}"):
+
+        with st.spinner("Generating explanation..."):
+            if use_llm:
+                explanation = explain_backtest(
+                    sharpe=sr,
+                    max_dd=md,
+                    final_strat=final_strat,
+                    final_market=final_mkt,
+                    ticker=ticker,
+                    total_return=total_ret_pct,
+                    bh_return=bh_ret_pct,
+                    num_trades=int(bt['Prediction'].sum()),
+                    win_rate=0.0,
+                    model=ollama_model,
+                )
+            else:
+                explanation = _rule_based_backtest(sr, md, final_strat, final_mkt)
+
+            st.session_state[bt_key] = explanation
+
+    if bt_key in st.session_state:
+        st.info(st.session_state[bt_key])
 
 
 # ── Tab 3 ─────────────────────────────────────────────────────────────────────
@@ -455,11 +480,15 @@ with tab5:
         m3.metric("Alpha vs Buy & Hold",   f"{summary['alpha']:+.2f}%")
         m4.metric("Total Trades",          summary['num_trades'])
 
-        # ── LLM walk-forward summary (uses first ticker's metrics for context)
-        if results.get("per_ticker"):
-            first_ticker = list(results["per_ticker"].keys())[0]
-            wf_m = results["per_ticker"][first_ticker]["metrics"]
-            with st.spinner("🤖 Generating strategy summary...") if use_llm else st.empty():
+        st.subheader("🤖 Walk-Forward Explanation")
+
+        if st.button("Generate walk-forward explanation", key="wf_explain_btn"):
+
+            with st.spinner("🤖 Generating strategy summary..."):
+
+                first_ticker = list(results["per_ticker"].keys())[0]
+                wf_m = results["per_ticker"][first_ticker]["metrics"]
+
                 if use_llm:
                     wf_explanation = explain_backtest(
                         sharpe=wf_m["sharpe_ratio"],
@@ -475,11 +504,17 @@ with tab5:
                     )
                 else:
                     wf_explanation = _rule_based_backtest(
-                        wf_m["sharpe_ratio"], wf_m["max_drawdown"],
+                        wf_m["sharpe_ratio"],
+                        wf_m["max_drawdown"],
                         wf_m["final_value"] / wf_m["starting_cash"],
                         wf_m["bh_final_value"] / wf_m["starting_cash"],
                     )
-            st.info(wf_explanation)
+
+                st.session_state["wf_explanation"] = wf_explanation
+
+        # persist output
+        if "wf_explanation" in st.session_state:
+            st.info(st.session_state["wf_explanation"])
 
         # ── Combined equity curve
         combined  = results["combined_equity"]
@@ -611,21 +646,34 @@ with tab6:
         )
 
         # ── LLM experiment summary
-        with st.spinner("🤖 Summarising experiment results...") if use_llm else st.empty():
-            if use_llm:
-                exp_explanation = explain_backtest(
-                    sharpe=best["Sharpe"],
-                    max_dd=best["Max Drawdown"],
-                    final_strat=1 + best["Return %"] / 100,
-                    final_market=1 + best["B&H Return %"] / 100,
-                    ticker=exp_ticker,
-                    total_return=best["Return %"],
-                    bh_return=best["B&H Return %"],
-                    num_trades=int(best["# Trades"]),
-                    win_rate=best["Win Rate %"],
-                    model=ollama_model,
-                )
-                st.info(exp_explanation)
+        st.divider()
+        st.subheader("🤖 Experiment Explanation")
+
+        exp_key = f"exp_explanation_{exp_ticker}_{best['Model']}_{best['Features']}"
+
+        if st.button("Generate experiment summary", key="exp_btn"):
+
+            with st.spinner("Generating summary..."):
+                if use_llm:
+                    explanation = explain_backtest(
+                        sharpe=best["Sharpe"],
+                        max_dd=best["Max Drawdown"],
+                        final_strat=1 + best["Return %"] / 100,
+                        final_market=1 + best["B&H Return %"] / 100,
+                        ticker=exp_ticker,
+                        total_return=best["Return %"],
+                        bh_return=best["B&H Return %"],
+                        num_trades=int(best["# Trades"]),
+                        win_rate=best["Win Rate %"],
+                        model=ollama_model,
+                    )
+                else:
+                    explanation = "Rule-based mode: LLM disabled."
+
+                st.session_state[exp_key] = explanation
+
+        if exp_key in st.session_state:
+            st.info(st.session_state[exp_key])
 
         st.subheader("📊 All Results")
         display_df = results_df.copy()
