@@ -21,12 +21,12 @@ from src.models.evaluate import sharpe_ratio, max_drawdown
 
 FEATURES = ['SMA_5', 'SMA_10', 'Close_lag_1', 'Close_lag_2', 'Return']
 
-
 def run_walk_forward(
     df_raw: pd.DataFrame,
     ticker: str,
     cutoff_date: str,
     starting_cash: float = 100_000.0,
+    bh_allocation_pct: float = 1.0,
     confidence_threshold: float = 0.55,
     position_size_pct: float = 0.10,
     model=None,               # NEW: pass any sklearn classifier, defaults to LogisticRegression
@@ -135,12 +135,18 @@ def run_walk_forward(
     eq_df = pd.DataFrame(equity_curve)
 
     # Buy-and-hold benchmark over same period
-    bh_start             = float(test_df.iloc[0]['Close'])
-    bh_shares            = int(starting_cash // bh_start)
-    bh_leftover          = starting_cash - bh_shares * bh_start
-    eq_df['BuyHold_Value'] = bh_shares * eq_df['Close'] + bh_leftover
+   # Buy-and-hold benchmark with adjustable allocation
+    bh_start   = float(test_df.iloc[0]['Close'])
+    bh_capital = starting_cash * bh_allocation_pct
 
-    # Performance metrics
+    bh_shares   = int(bh_capital // bh_start)
+    bh_leftover = bh_capital - bh_shares * bh_start
+
+    # Remaining cash stays idle (just like your strategy)
+    idle_cash = starting_cash - bh_capital
+
+    eq_df['BuyHold_Value'] = bh_shares * eq_df['Close'] + bh_leftover + idle_cash
+        # Performance metrics
     final_value  = eq_df['Portfolio_Value'].iloc[-1]
     final_bh     = eq_df['BuyHold_Value'].iloc[-1]
     total_return = (final_value - starting_cash) / starting_cash
@@ -224,6 +230,7 @@ def run_multi_ticker_walk_forward(
                 position_size_pct=position_size_pct,
                 model=copy.deepcopy(model),
                 feature_set=feature_set,
+                bh_allocation_pct=position_size_pct,
             )
             results[ticker] = r
         except Exception as e:

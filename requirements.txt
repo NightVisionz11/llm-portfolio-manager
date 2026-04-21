@@ -5,3 +5,4 @@ joblib
 yfinance
 streamlit
 plotly
+pytest

@@ -1,6 +1,6 @@
 {
   "starting_cash": 500000.0,
-  "cash": 404214.84002685547,
+  "cash": 354595.34173583984,
   "positions": {
     "NDX": {
       "shares": 2,
@@ -9,6 +9,10 @@
     "NVDA": {
       "shares": 286,
       "avg_cost": 174.39999389648438
+    },
+    "SPY": {
+      "shares": 70,
+      "avg_cost": 708.8499755859375
     }
   },
   "trades": [
@@ -30,6 +34,16 @@
       "price": 174.4,
       "value": 49878.4,
       "probability": 0.5562,
+      "pnl": null
+    },
+    {
+      "date": "2026-04-21 09:55",
+      "ticker": "SPY",
+      "action": "BUY",
+      "shares": 70,
+      "price": 708.85,
+      "value": 49619.5,
+      "probability": 0.5672,
       "pnl": null
     }
   ]
