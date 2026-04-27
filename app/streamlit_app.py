@@ -627,7 +627,7 @@ with tab6:
         with st.spinner(f"Running {len(MODEL_REGISTRY) * len(FEATURE_SETS)} combinations..."):
             results_df = run_experiments(
                 df_raw=df_raw,
-                ticker=exp_ticker,
+                ticker=ticker,
                 cutoff_date=str(exp_cutoff),
                 starting_cash=float(exp_cash),
                 confidence_threshold=exp_threshold,
@@ -639,7 +639,12 @@ with tab6:
     if "exp_results" in st.session_state:
         results_df = st.session_state["exp_results"]
 
-        best = results_df.loc[results_df["Return %"].idxmax()]
+        if not results_df.empty and "Return %" in results_df.columns:
+            best = results_df.loc[results_df["Return %"].idxmax()]
+        else:
+            st.error(f"No valid results returned for {ticker}. Check console for details.")
+            best = pd.Series()  # or handle as needed
+
         st.success(
             f"🏆 Best: **{best['Model']}** with **{best['Features']}** features — "
             f"{best['Return %']:+.2f}% return, {best['Alpha']:+.2f}% alpha"

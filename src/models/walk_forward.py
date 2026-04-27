@@ -201,42 +201,87 @@ def run_multi_ticker_walk_forward(
 ) -> dict:
     """
     Run walk-forward backtest across multiple tickers.
-    Capital is split evenly across tickers that successfully complete —
-    skipped tickers do not silently reduce the starting portfolio value.
+    Capital is split evenly ONLY among tickers that successfully complete.
+    Skipped tickers do NOT reduce the total portfolio capital.
     """
     import copy
 
-    # ── Step 1: run every ticker at full capital so return % and trade
-    #    logic are unaffected, collect only the ones that succeed ────────
-    results    = {}
+    if not tickers or not isinstance(tickers, (list, tuple)):
+        raise ValueError("tickers must be a non-empty list")
+
+    results = {}
     all_trades = []
 
-    per_ticker_cash = starting_cash / len(tickers)
-
+    # Step 1: First pass — try all tickers and collect only the successful ones
+    successful_tickers = []
+    
     for ticker in tickers:
         if ticker not in raw_data:
+            print(f"[{ticker}] Skipped: Not found in raw_data")
             continue
         try:
-            r = run_walk_forward(
+            # Temporarily run with full capital just to test if it works
+            temp_result = run_walk_forward(
                 df_raw=raw_data[ticker],
                 ticker=ticker,
                 cutoff_date=cutoff_date,
-                starting_cash=per_ticker_cash,
+                starting_cash=starting_cash,           # Use full amount for test
                 confidence_threshold=confidence_threshold,
                 position_size_pct=position_size_pct,
                 model=copy.deepcopy(model),
                 feature_set=feature_set,
                 bh_allocation_pct=position_size_pct,
             )
-            results[ticker] = r
+            results[ticker] = temp_result
+            successful_tickers.append(ticker)
+            print(f"[{ticker}] Successfully processed")
         except Exception as e:
             print(f"[{ticker}] Skipped: {e}")
 
-    if not results:
+    if not successful_tickers:
+        print("No tickers were successfully processed.")
         return {}
-    # ── Step 3: combine equity curves across all successful tickers ──────
+
+    # Step 2: Calculate fair capital split among ONLY successful tickers
+    num_success = len(successful_tickers)
+    per_ticker_cash = starting_cash / num_success
+
+    print(f"Allocating ${per_ticker_cash:,.0f} per ticker across {num_success} successful tickers "
+          f"(Total: ${starting_cash:,.0f})")
+
+    # Step 3: Re-run successful tickers with correct capital allocation
+    final_results = {}
+    all_trades = []
+
+    for ticker in successful_tickers:
+        try:
+            r = run_walk_forward(
+                df_raw=raw_data[ticker],
+                ticker=ticker,
+                cutoff_date=cutoff_date,
+                starting_cash=per_ticker_cash,        # ← Now correct amount
+                confidence_threshold=confidence_threshold,
+                position_size_pct=position_size_pct,
+                model=copy.deepcopy(model),
+                feature_set=feature_set,
+                bh_allocation_pct=position_size_pct,
+            )
+            final_results[ticker] = r
+            
+            # Collect trades (add ticker if not already present)
+            for trade in r.get("trades", []):
+                trade["ticker"] = trade.get("ticker", ticker)
+                all_trades.append(trade)
+                
+        except Exception as e:
+            print(f"[{ticker}] Failed on second run: {e}")  # Should be rare
+
+    if not final_results:
+        return {}
+
+    # Step 4: Combine equity curves (same as before)
     equity_dfs = []
-    for ticker, r in results.items():
+    for ticker, r in final_results.items():
         eq = r["equity_curve"][["Date", "Portfolio_Value", "BuyHold_Value"]].copy()
         eq = eq.rename(columns={
             "Portfolio_Value": f"{ticker}_Value",
@@ -258,11 +303,11 @@ def run_multi_ticker_walk_forward(
     bh_return    = (total_bh   - starting_cash) / starting_cash * 100
 
     return {
-        "per_ticker":      results,
+        "per_ticker":      final_results,
         "combined_equity": combined,
         "all_trades":      sorted(all_trades, key=lambda x: x["date"]),
         "summary": {
-            "tickers":          list(results.keys()),
+            "tickers":          list(final_results.keys()),
             "cutoff_date":      cutoff_date,
             "starting_cash":    starting_cash,
             "final_value":      round(total_final, 2),
@@ -270,5 +315,6 @@ def run_multi_ticker_walk_forward(
             "bh_return_pct":    round(bh_return, 2),
             "alpha":            round(total_return - bh_return, 2),
             "num_trades":       len(all_trades),
+            "successful_tickers": len(successful_tickers),
         },
     }

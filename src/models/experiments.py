@@ -41,17 +41,17 @@ def run_experiments(
     starting_cash: float = 100_000.0,
     confidence_threshold: float = 0.55,
     position_size_pct: float = 0.95,
-    feature_sets: dict = None,   # ← pass FEATURE_SETS_V1, FEATURE_SETS_V2, or a merged dict
+    feature_sets: dict = None,
 ) -> pd.DataFrame:
     """
-    Runs every model x feature set combination and returns a results dataframe.
-
-    To compare old vs new features in one call:
-        run_experiments(..., feature_sets={**FEATURE_SETS_V1, **FEATURE_SETS_V2})
+    Runs every model x feature set combination.
+    Now safely handles failures per ticker and returns empty df with clear message if nothing succeeded.
     """
     import copy
     fsets = feature_sets or FEATURE_SETS
     rows = []
+
+    print(f"🔄 Running experiments for {ticker}...")
 
     for model_name, model_template in MODEL_REGISTRY.items():
         for feat_name, feat_list in fsets.items():
@@ -82,6 +82,18 @@ def run_experiments(
                     "Test Days":     m["test_days"],
                 })
             except Exception as e:
-                print(f"[{model_name} | {feat_name}] failed: {e}")
+                # Print friendly message instead of silent fail
+                print(f"   ❌ [{model_name} | {feat_name}] failed for {ticker}: {e}")
 
-    return pd.DataFrame(rows)
+    if not rows:
+        print(f"⚠️  No successful experiments for ticker '{ticker}'. "
+              f"Check data quality / number of rows / cutoff_date.")
+        # Return empty DataFrame with correct columns so downstream code doesn't crash
+        return pd.DataFrame(columns=[
+            "Model", "Features", "Return %", "B&H Return %", "Alpha", "Sharpe",
+            "B&H Sharpe", "Max Drawdown", "Win Rate %", "# Trades", "Train AUC", "Test Days"
+        ])
+
+    results_df = pd.DataFrame(rows)
+    print(f"✅ Completed {len(results_df)} experiments for {ticker}")
+    return results_df
