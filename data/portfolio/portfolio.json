@@ -1,6 +1,6 @@
 {
   "starting_cash": 500000.0,
-  "cash": 354595.34173583984,
+  "cash": 304667.60830688477,
   "positions": {
     "NDX": {
       "shares": 2,
@@ -13,6 +13,10 @@
     "SPY": {
       "shares": 70,
       "avg_cost": 708.8499755859375
+    },
+    "GOOGL": {
+      "shares": 143,
+      "avg_cost": 349.1449890136719
     }
   },
   "trades": [
@@ -44,6 +48,16 @@
       "price": 708.85,
       "value": 49619.5,
       "probability": 0.5672,
+      "pnl": null
+    },
+    {
+      "date": "2026-04-28 12:48",
+      "ticker": "GOOGL",
+      "action": "BUY",
+      "shares": 143,
+      "price": 349.145,
+      "value": 49927.73,
+      "probability": 0.5604,
       "pnl": null
     }
   ]
