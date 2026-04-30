@@ -122,6 +122,10 @@ ml-portfolio-manager/
 
    > If you are on a system where `pip` points to Python 2, use `pip3` instead.
 
+   Install ollama from https://ollama.com
+   then run "ollama pull llama3"
+   then continue below
+
 ### Running the App
 
 ```bash
@@ -186,8 +190,7 @@ Key parameters that can be tuned from the dashboard:
 
 ## Team
 
-| Armin Omidvar | 
-|
+| Armin Omidvar and Seth Sorrentino| 
 
 
 > *Built with Python · scikit-learn · Streamlit · pandas*
